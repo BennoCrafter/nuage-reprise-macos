@@ -252,6 +252,8 @@ struct NuageApp: App {
         
         Button("Seek Backward", action: player.seekBackward)
             .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+        
+        
     }
     
     init() {

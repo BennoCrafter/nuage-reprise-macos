@@ -7,54 +7,47 @@
 //
 
 import AppKit
-import SwiftUI
 import AVFoundation
 import Combine
 import MediaPlayer
-import URLImage
 import SoundCloud
+import SwiftUI
+import URLImage
 
 protocol Streamable {
-    
     func prepare() -> AnyPublisher<AVURLAsset, Error>
-    
 }
 
 private let volumeKey = "volume"
     
 class StreamPlayer: ObservableObject {
-    
     private var subscriptions = Set<AnyCancellable>()
     
     private var player: AVPlayer
     private(set) var queue = [Track]() {
-        didSet {
-            reloadQueueOrder()
-        }
+        didSet { reloadQueueOrder() }
     }
+
     private var queueOrder = [Int]()
     private(set) var currentStreamIndex: Int? {
         didSet {
-            currentStream = self.currentStreamIndex.map { queue[queueOrder[$0]] }
+            currentStream = currentStreamIndex.map { queue[queueOrder[$0]] }
         }
     }
     
     @Published private(set) var currentStream: Track?
+    private var currentAsset: AVURLAsset? // ✅ store asset for export
     
     @AppStorage("shuffleQueue") var shuffleQueue: Bool = false {
         didSet {
-            // Here we have to unravel the index again
-            // So that we end up in the same spot of the queue
-            // This should not trigger $currentStream, since it's the same track
             let index = currentStreamIndex.map { queueOrder[$0] }
-            
             reloadQueueOrder()
-            
             if let index = index {
                 currentStreamIndex = queueOrder.firstIndex(of: index)
             }
         }
     }
+
     @AppStorage("repeatQueue") var repeatQueue: Bool = false
     
     @Published var volume: Float = 0.5 {
@@ -84,7 +77,7 @@ class StreamPlayer: ObservableObject {
     
     init() {
         self.player = AVPlayer()
-        self.player.allowsExternalPlayback = false
+        player.allowsExternalPlayback = false
         
         let defaults = UserDefaults.standard
         if defaults.object(forKey: volumeKey) != nil {
@@ -123,12 +116,7 @@ class StreamPlayer: ObservableObject {
     }
     
     func togglePlayback() {
-        if isPlaying {
-            pause()
-        }
-        else {
-            resume()
-        }
+        isPlaying ? pause() : resume()
     }
     
     func resume(from startIndex: Int? = nil) {
@@ -137,32 +125,38 @@ class StreamPlayer: ObservableObject {
         let newStream = queue[queueOrder[idx]]
         if currentStream == newStream {
             player.play()
-        }
-        else {
-            self.currentStreamIndex = idx
-            self.shouldSeek = false
-            self.progress = 0
-            self.shouldSeek = true
+        } else {
+            currentStreamIndex = idx
+            shouldSeek = false
+            progress = 0
+            shouldSeek = true
             
             let track = currentStream!
             track.prepare()
                 .receive(on: RunLoop.main)
                 .sink(receiveCompletion: { completion in
-                    if case let .failure(error) = completion  {
+                    if case let .failure(error) = completion {
                         print("Failed to stream track: \(error)")
                     }
                 }, receiveValue: { [weak self] asset in
                     guard let self = self else { return }
                     
-                    let item = AVPlayerItem(asset: asset)
+                    self.currentAsset = asset // ✅ capture asset
                     
+                    let item = AVPlayerItem(asset: asset)
                     self.player.replaceCurrentItem(with: item)
                     self.player.play()
                     
-                    NotificationCenter.default.addObserver(self, selector: #selector(self.advanceForward), name: Notification.Name.AVPlayerItemDidPlayToEndTime, object: item)
+                    NotificationCenter.default.addObserver(
+                        self,
+                        selector: #selector(self.advanceForward),
+                        name: Notification.Name.AVPlayerItemDidPlayToEndTime,
+                        object: item
+                    )
                     
                     self.updateNowPlayingInfo()
-                }).store(in: &subscriptions)
+                })
+                .store(in: &subscriptions)
         }
     }
     
@@ -179,8 +173,6 @@ class StreamPlayer: ObservableObject {
         pause()
         queue = tracks
         
-        // If we're in shuffle mode, we first have to unravel `idx`
-        // Otherwise we start playing a random track
         let start = shuffleQueue ? queueOrder.firstIndex(of: idx) : idx
         resume(from: start)
     }
@@ -190,11 +182,9 @@ class StreamPlayer: ObservableObject {
         player.replaceCurrentItem(with: nil)
         if queue.count > idx + 1 {
             resume(from: idx + 1)
-        }
-        else if repeatQueue {
+        } else if repeatQueue {
             resume(from: 0)
-        }
-        else {
+        } else {
             queue = []
             pause()
         }
@@ -207,44 +197,32 @@ class StreamPlayer: ObservableObject {
             player.replaceCurrentItem(with: nil)
             if idx > 0 {
                 resume(from: idx - 1)
-            }
-            else {
+            } else {
                 currentStreamIndex = nil
             }
-        }
-        else {
+        } else {
             restartPlayback()
         }
     }
     
-    func seekForward() {
-        progress += 15
-    }
-    
-    func seekBackward() {
-        progress -= 15
-    }
+    func seekForward() { progress += 15 }
+    func seekBackward() { progress -= 15 }
     
     func reset() {
         pause()
         player.replaceCurrentItem(with: nil)
         queue = []
         currentStreamIndex = nil
+        currentAsset = nil
     }
     
     func enqueue(_ streams: [Track], playNext: Bool = false) {
         guard streams.count > 0 else { return }
-        
-        if playNext {
-            queue = streams + queue
-        }
-        else {
-            queue = queue + streams
-        }
+        queue = playNext ? streams + queue : queue + streams
     }
     
     private func reloadQueueOrder() {
-        queueOrder = Array(0..<queue.count)
+        queueOrder = Array(0 ..< queue.count)
         if shuffleQueue {
             queueOrder = queueOrder.shuffled()
         }
@@ -258,27 +236,22 @@ class StreamPlayer: ObservableObject {
             self.togglePlayback()
             return .success
         }
-        
         center.playCommand.addTarget { _ in
             self.resume()
             return .success
         }
-        
         center.pauseCommand.addTarget { _ in
             self.pause()
             return .success
         }
-        
         center.nextTrackCommand.addTarget { _ in
             self.advanceForward()
             return .success
         }
-        
         center.previousTrackCommand.addTarget { _ in
             self.advanceBackward()
             return .success
         }
-        
         center.changePlaybackPositionCommand.addTarget { event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
@@ -301,8 +274,7 @@ class StreamPlayer: ObservableObject {
         
         if currentID == currentStream.id {
             info![MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-        }
-        else {
+        } else {
             info = [
                 MPMediaItemPropertyPersistentID: currentStream.id,
                 MPMediaItemPropertyTitle: currentStream.title,
@@ -316,13 +288,12 @@ class StreamPlayer: ObservableObject {
             URLImageService.shared.remoteImagePublisher(url)
                 .sink(receiveCompletion: { _ in },
                       receiveValue: { imageInfo in
-                    let image = NSImage(cgImage: imageInfo.cgImage, size: imageInfo.size)
-                    let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-                    info![MPMediaItemPropertyArtwork] = artwork
-                    
-                    center.nowPlayingInfo = info
-                })
-                .store(in: &self.subscriptions)
+                          let image = NSImage(cgImage: imageInfo.cgImage, size: imageInfo.size)
+                          let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                          info![MPMediaItemPropertyArtwork] = artwork
+                          center.nowPlayingInfo = info
+                      })
+                .store(in: &subscriptions)
         }
         
         center.nowPlayingInfo = info
@@ -335,4 +306,74 @@ class StreamPlayer: ObservableObject {
         }
     }
     
+    // MARK: - Export
+    
+    func exportCurrentTrack(completion: @escaping (URL?) -> Void) {
+        guard let stream = currentStream else {
+            print("No track currently playing")
+            completion(nil)
+            return
+        }
+        
+        // Use the already-loaded asset if available
+        if let asset = currentAsset {
+            print("Using already loaded asset")
+            exportTrackToDownloads(asset: asset, title: stream.title, completion: completion)
+        } else {
+            // Fallback: prepare the stream if asset not available
+            print("Prepare the stream")
+            stream.prepare()
+                .receive(on: DispatchQueue.global(qos: .userInitiated))
+                .sink(receiveCompletion: { result in
+                    if case let .failure(error) = result {
+                        print("Failed to prepare track: \(error)")
+                        DispatchQueue.main.async {
+                            completion(nil)
+                        }
+                    }
+                }, receiveValue: { [weak self] asset in
+                    self?.exportTrackToDownloads(asset: asset, title: stream.title, completion: completion)
+                })
+                .store(in: &subscriptions)
+        }
+    }
+    
+    private func exportTrackToDownloads(asset: AVURLAsset, title: String, completion: @escaping (URL?) -> Void) {
+        let sourceURL = asset.url
+        
+        // Sanitize the title for a safe filename
+        let safeTitle = title.replacingOccurrences(of: "[^a-zA-Z0-9\\s\\-_\\.]", with: "", options: .regularExpression)
+        
+        let downloadsFolder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        
+        // Determine file extension or default to mp3
+        let pathExtension = sourceURL.pathExtension.isEmpty ? "mp3" : sourceURL.pathExtension
+        let destinationURL = downloadsFolder.appendingPathComponent("\(safeTitle).\(pathExtension)")
+        
+        // Remove existing file if present
+        try? FileManager.default.removeItem(at: destinationURL)
+        
+        // Download the file
+        let task = URLSession.shared.downloadTask(with: sourceURL) { tempFile, _, error in
+            guard let tempFile = tempFile, error == nil else {
+                print("Download failed: \(error?.localizedDescription ?? "Unknown error")")
+                completion(nil)
+                return
+            }
+            
+            do {
+                try FileManager.default.moveItem(at: tempFile, to: destinationURL)
+                print("Downloaded track to \(destinationURL)")
+                
+                DispatchQueue.main.async {
+                    NSWorkspace.shared.open(downloadsFolder)
+                    completion(destinationURL)
+                }
+            } catch {
+                print("Move failed: \(error)")
+                completion(nil)
+            }
+        }
+        task.resume()
+    }
 }

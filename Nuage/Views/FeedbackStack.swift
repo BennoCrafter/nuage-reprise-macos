@@ -5,11 +5,12 @@
 //  Created by Laurin Brandner on 24.07.23.
 //
 
-import SwiftUI
 import SoundCloud
+import SwiftUI
 
 struct FeedbackStack<T: SoundCloudIdentifiable>: View {
-    
+    @EnvironmentObject private var player: StreamPlayer
+
     private var item: T?
     private var horizontal: Bool
     
@@ -37,7 +38,7 @@ struct FeedbackStack<T: SoundCloudIdentifiable>: View {
                 return nil
             }
             return posts
-                .filter { !$0.isTrack && $0.isRepost}
+                .filter { !$0.isTrack && $0.isRepost }
                 .compactMap { $0.playlist }
                 .contains(playlist)
         }
@@ -104,6 +105,17 @@ struct FeedbackStack<T: SoundCloudIdentifiable>: View {
             .disabled(item == nil)
             .buttonStyle(.borderless)
         }
+        Button(action: {
+            player.exportCurrentTrack { url in
+                if let url = url {
+                    print("Exported to \(url)")
+                }
+            }
+        }) {
+            Image(systemName: "arrow.down.circle")
+        }
+        .disabled(item == nil)
+        .buttonStyle(.borderless)
     }
     
     @ViewBuilder private func resizableImage(name: String, height: CGFloat? = 16, width: CGFloat? = 16) -> some View {
@@ -122,5 +134,4 @@ struct FeedbackStack<T: SoundCloudIdentifiable>: View {
         self.item = track
         self.horizontal = horizontal
     }
-    
 }
